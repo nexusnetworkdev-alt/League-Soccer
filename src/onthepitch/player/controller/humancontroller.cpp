@@ -12,6 +12,7 @@ HumanController::HumanController(Match* match, IHIDevice* hid) : PlayerControlle
 HumanController::~HumanController() {}
 
 void HumanController::SetPlayer(PlayerBase* player) {
+  sprintTap.Reset();
   lastSwitchTime_ms = match->GetActualTime_ms();
 
   PlayerController::SetPlayer(player);
@@ -145,7 +146,7 @@ void HumanController::RequestCommand(PlayerCommandQueue& commandQueue) {
         // Classic PES 5/6 1-2 Pass: L1 + ShortPass makes passer break forward dynamically
         if (hid->GetButton(e_ButtonFunction_Switch)) {
           command.modifier |= e_PlayerCommandModifier_OneTwo;
-          team->GetController()->ApplyAttackingRun(CastPlayer());
+          // The run begins when the pass actually touches the ball.
         }
 
         float inputPower = clamp(pow(gaugeFactor, 0.7f), 0.01f, 1.0f);
@@ -213,9 +214,8 @@ void HumanController::RequestCommand(PlayerCommandQueue& commandQueue) {
         // Classic PES 5/6 Chip Shot: L1 + Shoot
         if (hid->GetButton(e_ButtonFunction_Switch)) {
           command.modifier |= e_PlayerCommandModifier_Chip;
-        }
-        // Classic PES 5/6 Controlled / Finesse Shot: R2 + Shoot
-        if (hid->GetButton(e_ButtonFunction_Dribble)) {
+        } else if (hid->GetButton(e_ButtonFunction_Dribble)) {
+          // Controlled shot: chip takes precedence when both modifiers are held.
           command.modifier |= e_PlayerCommandModifier_Finesse;
         }
 
@@ -282,17 +282,11 @@ void HumanController::RequestCommand(PlayerCommandQueue& commandQueue) {
   inputDirection = steadyDirection;
   // SetBlueDebugPilon(player->GetPosition() + inputDirection * (inputVelocityFloat * 0.5f + 0.6f));
 
-  if (match->IsInPlay() && !match->IsInSetPiece()) {
+  if (match->IsInPlay() && !match->IsInSetPiece() && !IsSuperCancelling()) {
     bool idleTurnToOpponentGoal = false;
-    bool knockOn = false;
+    const bool knockOn = sprintTap.Consume();
     if (hid->GetButton(e_ButtonFunction_Dribble))
       idleTurnToOpponentGoal = true;
-    if (hid->GetButton(e_ButtonFunction_Dribble) && hid->GetButton(e_ButtonFunction_Sprint))
-      knockOn = true;
-    if (isKnockOnSprint) {
-      knockOn = true;
-      isKnockOnSprint = false;
-    }
 
     // special adapted input for ballcontrol and trap, when we have shoot/pass buffers
     Vector3 inputDirectionSave2 = inputDirection;
@@ -403,12 +397,12 @@ void HumanController::Process() {
                         CastPlayer() == match->GetDesignatedPossessionPlayer(),
                         team->HasPossession(), hid->GetButton(e_ButtonFunction_ShortPass),
                         hid->GetPreviousButtonState(e_ButtonFunction_ShortPass));
-  if (passCallPressed)
+  if (passCallPressed && !IsSuperCancelling())
     team->GetController()->RequestPass(CastPlayer());
 
   // action?
 
-  if (actionMode == 0 && !passCallPressed &&
+  if (actionMode == 0 && !passCallPressed && !IsSuperCancelling() &&
       (!match->IsInSetPiece() || team->GetController()->GetPieceTaker() == player)) {
     // todo: clean this up
 
@@ -527,16 +521,13 @@ void HumanController::Process() {
     }
   }
 
-  if (hid->GetButton(e_ButtonFunction_Sprint) &&
-      !hid->GetPreviousButtonState(e_ButtonFunction_Sprint)) {
-    int now_ms = static_cast<int>(match->GetActualTime_ms());
-    if (now_ms - lastSprintPressTime_ms < 280) {
-      isKnockOnSprint = true;
-    }
-    lastSprintPressTime_ms = now_ms;
-  }
-
-  if (!fullyManualSwitching && hid->GetButton(e_ButtonFunction_Switch) && hasPossession)
+  sprintTap.Update(match->GetActualTime_ms(),
+                   hid->GetButton(e_ButtonFunction_Sprint) &&
+                       !hid->GetPreviousButtonState(e_ButtonFunction_Sprint),
+                   match->IsInPlay() && !match->IsInSetPiece() && !IsSuperCancelling());
+  if (!fullyManualSwitching && !IsSuperCancelling() &&
+      hid->GetButton(e_ButtonFunction_Switch) &&
+      !hid->GetPreviousButtonState(e_ButtonFunction_Switch) && actionMode == 0 && hasPossession)
     team->GetController()->ApplyAttackingRun();
 }
 
@@ -574,8 +565,7 @@ void HumanController::Reset() {
   actionButton = e_ButtonFunction_ShortPass;
   actionBufferTime_ms = 0;
 
-  lastSprintPressTime_ms = 0;
-  isKnockOnSprint = false;
+  sprintTap.Reset();
 
   lastSwitchTime_ms = -10000;
   lastSwitchTimeDuration_ms = 300;
@@ -623,7 +613,7 @@ void HumanController::_GetHidInput(Vector3& rawInputDirection, float& rawInputVe
     rawInputDirection.Normalize();  // hid should do this, but still
   }
 
-  if (GetLastSwitchBias() > 0.0f) {
+  if (!IsSuperCancelling() && GetLastSwitchBias() > 0.0f) {
     float switchInfluence = 0.5f;
     float switchBias = pow(GetLastSwitchBias(), 0.7f);
     Vector3 currentMovement = player->GetDirectionVec() * player->GetFloatVelocity();

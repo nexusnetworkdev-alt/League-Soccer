@@ -4,6 +4,7 @@
 #include "AIsupport/AIfunctions.hpp"
 #include "managers/resourcemanagerpool.hpp"
 #include "match.hpp"
+#include "gameplaytuning.hpp"
 #include "officials.hpp"
 #include "player/playerofficial.hpp"
 #include "scene/objectfactory.hpp"
@@ -21,6 +22,7 @@ Referee::Referee(Match* match) : match(match) {
    buffer.active = true;
 
    foul.foulPlayer = nullptr;
+   foul.foulVictim = nullptr;
    foul.foulType = 0;
    foul.advantage = false;
    foul.foulTime = 0;
@@ -125,13 +127,16 @@ void Referee::Process() {
 
     // goal kick / corner
 
-    if (fabs(ballPos.coords[0]) > pitchHalfW + lineHalfW + 0.11) {
+    if (match->IsInPlay() && fabs(ballPos.coords[0]) > pitchHalfW + lineHalfW + 0.11) {
       foul.advantage = false;
       bool isFoul = false;
       if (!match->IsGoalScored())
         isFoul = CheckFoul();
-      else
+      else {
+        PreservePendingCaution();
         foul.foulType = 0;
+        foul.hasBeenProcessed = true;
+      }
       if (isFoul == false) {
         match->StopPlay();
 
@@ -179,7 +184,7 @@ void Referee::Process() {
 
     // over sideline
 
-    if (afterSetPieceRelaxTime_ms == 0) {
+    if (match->IsInPlay() && afterSetPieceRelaxTime_ms == 0) {
       if (fabs(ballPos.coords[1]) > pitchHalfH + lineHalfW + 0.11) {
         foul.advantage = false;
          if (!CheckFoul()) {
@@ -259,6 +264,8 @@ void Referee::Process() {
     }
   }
 
+  IssuePendingCautions();
+
   if (match->IsInSetPiece()) {
     // check if set piece has been taken
     if (buffer.taker->TouchAnim() && !buffer.taker->TouchPending()) {
@@ -283,6 +290,7 @@ void Referee::Process() {
 void Referee::PrepareSetPiece(e_SetPiece setPiece) {
   // position players for set piece situation
 
+  offsidePlayers.clear();
   match->ResetSituation(buffer.restartPos);
 
   match->GetTeam(0)->GetController()->PrepareSetPiece(setPiece, buffer.teamID);
@@ -334,7 +342,7 @@ void Referee::BallTouched() {
 
   if (match->IsInPlay() &&
       (buffer.active == false ||
-       (buffer.active == true && buffer.desiredSetPiece != e_SetPiece_ThrowIn))) {
+       !IsOffsideExemptRestart(buffer.desiredSetPiece))) {
     // check for offside players at moment of touch
     float offside = AI_GetOffsideLine(match, match->GetMentalImage(0), abs(lastTouchTeamID - 1));
     std::vector<Player*> players;
@@ -363,6 +371,7 @@ void Referee::TripNotice(Player* tripee, Player* tripper, int tackleType) {
         (tripee->GetPosition() - match->GetBall()->Predict(0).Get2D()).GetLength() < 2.0 &&
         tripper->GetTeam()->GetID() != tripee->GetTeam()->GetID()) {
       // uooooga uooooga foul!
+      PreservePendingCaution();
       foul.foulType = 1;
       foul.advantage = true;
       foul.foulPlayer = tripper;
@@ -406,6 +415,7 @@ void Referee::TripNotice(Player* tripee, Player* tripper, int tackleType) {
         // uooooga uooooga foul!
         // printf("sliding! %lu ms ago\n", match->GetActualTime_ms() -
         // tripper->GetLastTouchTime_ms());
+        PreservePendingCaution();
         foul.foulType = 1;
         foul.advantage = true;
         foul.foulPlayer = tripper;
@@ -413,12 +423,16 @@ void Referee::TripNotice(Player* tripee, Player* tripper, int tackleType) {
         foul.foulTime = match->GetActualTime_ms();
         foul.foulPosition = tripee->GetPosition();
         foul.hasBeenProcessed = false;
-        if (severity > 1.4)
+        if (severity > 1.4) {
           foul.foulType = 2;
+          // Avoid letting a player awaiting a second caution keep participating.
+          if (tripper->GetCards() + pendingCautions.CountFor(tripper) >= 1)
+            foul.advantage = false;
+        }
         if (severity > 2.0) {
           foul.foulType = 3;
           foul.advantage = false;
-        } else {
+        } else if (foul.advantage) {
           if (!IsReleaseVersion())
             match->SpamMessage(Localization::GetInstance().Translate("ingame_advantage"), 3000);
         }
@@ -440,22 +454,19 @@ bool Referee::CheckFoul() {
     if (penalty) {
       foul.advantage = false;
     } else {
-      if (match->GetActualTime_ms() - 600 > foul.foulTime) {
-        // PES 5/6: advantage rule gives attacking team 3.5 seconds to
-        // capitalise before the referee reverts the call.
-        if (match->GetActualTime_ms() - 3500 > foul.foulTime) {
-          // cancel foul, advantage took long enough
-          // todo: yellow cards need to be remembered though ;)
-          foul.foulPlayer = nullptr;
-          foul.foulVictim = nullptr;
-          foul.foulType = 0;
-        } else {
-          // calculate if there's advantage still
-          if (foul.foulVictim && foul.foulVictim->GetTeam() &&
-              foul.foulVictim->GetTeam()->GetFadingTeamPossessionAmount() < 1.0) {
-            foul.advantage = false;
-          }
-        }
+      const bool possessionLost = foul.foulVictim && foul.foulVictim->GetTeam() &&
+          foul.foulVictim->GetTeam()->GetFadingTeamPossessionAmount() < 1.0;
+      const auto decision = GameplayTuning::EvaluateAdvantage(
+          match->GetActualTime_ms(), foul.foulTime, possessionLost);
+      if (decision == GameplayTuning::AdvantageDecision::PlayedOut) {
+        PreservePendingCaution();
+        foul.foulPlayer = nullptr;
+        foul.foulVictim = nullptr;
+        foul.foulType = 0;
+        foul.advantage = false;
+        foul.hasBeenProcessed = true;
+      } else if (decision == GameplayTuning::AdvantageDecision::RecallFoul) {
+        foul.advantage = false;
       }
     }
   }
@@ -501,4 +512,21 @@ bool Referee::CheckFoul() {
   }
 
   return false;
+}
+
+void Referee::PreservePendingCaution() {
+  if (foul.foulType == 2 && !foul.hasBeenProcessed) {
+    pendingCautions.Add(foul.foulPlayer);
+    foul.hasBeenProcessed = true;
+  }
+}
+
+void Referee::IssuePendingCautions() {
+  // Resolve before the next restart, including goals and period breaks.
+  // Keep the restart and current foul intact: the caution is a separate sanction.
+  const auto cautions = pendingCautions.TakeAtStoppage(match->IsInPlay());
+  for (Player* offender : cautions) {
+    offender->GiveYellowCard(match->GetActualTime_ms());
+    match->SpamMessage(Localization::GetInstance().Translate("ingame_yellow_card") + "!");
+  }
 }

@@ -9,6 +9,19 @@
 
 namespace GameplayTuning {
 
+enum class AdvantageDecision { Continue, RecallFoul, PlayedOut };
+
+inline AdvantageDecision EvaluateAdvantage(unsigned long now_ms, unsigned long foulAt_ms,
+                                            bool possessionLost) {
+  // Subtract timestamps first: subtracting the allowance from an early match
+  // clock would underflow and prematurely discard the foul.
+  const unsigned long elapsed_ms = now_ms - foulAt_ms;
+  if (elapsed_ms > 3500)
+    return AdvantageDecision::PlayedOut;
+  if (elapsed_ms > 600 && possessionLost)
+    return AdvantageDecision::RecallFoul;
+  return AdvantageDecision::Continue;
+}
 inline float Clamp01(float value) {
   return std::max(0.0f, std::min(value, 1.0f));
 }

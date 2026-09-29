@@ -3,6 +3,7 @@
 
 #include "../../../hid/ihidevice.hpp"
 #include "playercontroller.hpp"
+#include "../../sprinttap.hpp"
 
 class Player;
 
@@ -44,8 +45,7 @@ protected:
   int actionBufferTime_ms;
   int gauge_ms;
 
-  int lastSprintPressTime_ms;
-  bool isKnockOnSprint;
+  SprintTap sprintTap;
 
   // stuff to keep track of analog stick (or keys even) so that we can use a direction once it's
   // been pointed in for a while, instead of directly

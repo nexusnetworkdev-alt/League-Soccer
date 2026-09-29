@@ -3,6 +3,7 @@
 
 #include "../gamedefines.hpp"
 #include "defines.hpp"
+#include "pendingcautions.hpp"
 #include "scene/objects/sound.hpp"
 #include "scene/scene3d/scene3d.hpp"
 
@@ -67,6 +68,10 @@ protected:
   std::map<Player*, Vector3> offsidePlayers;  // player, position at time of touch
 
   Foul foul;
+  PendingCautions<Player> pendingCautions;
+
+  void PreservePendingCaution();
+  void IssuePendingCautions();
 
   boost::intrusive_ptr<Sound> whistle[4];  // 0: short, 1: long, 2: half time, 3: full time
 };

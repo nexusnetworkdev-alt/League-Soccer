@@ -1,4 +1,4 @@
-﻿// Copyright 2019 Google LLC & Bastiaan Konings
+// Copyright 2019 Google LLC & Bastiaan Konings
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -17,6 +17,7 @@
 #include "../../../main.hpp"
 #include "../../AIsupport/AIfunctions.hpp"
 #include "../../match.hpp"
+#include "../../shotaim.hpp"
 #include "../../team.hpp"
 #include "../player.hpp"
 #include "humanoid_utils.hpp"
@@ -657,6 +658,10 @@ void Humanoid::Process() {
             CastPlayer(),
             GetTouchTypeForBodyPart(currentAnim->anim->GetVariable("touch_bodypart")));
         match->GetMatchData()->AddPassAttempt(team->GetID());
+        if (currentAnim->functionType == e_FunctionType_ShortPass &&
+            (currentAnim->originatingCommand.modifier & e_PlayerCommandModifier_OneTwo)) {
+          team->GetController()->ApplyAttackingRun(CastPlayer());
+        }
         CastPlayer()->UpdatePossessionStats(false);
         if (targetPlayer)
           targetPlayer->UpdatePossessionStats(false);
@@ -672,18 +677,10 @@ void Humanoid::Process() {
             AI_GetShotDirection(CastPlayer(), inputDirection,
                                 currentAnim->originatingCommand.touchInfo.autoDirectionBias);
 
-        float maxDeviationAngle = 0.1f * pi;
-        radian angleDiff = ballDirectionAltered.Get2D().GetAngle2D(ballDirection.Get2D());
-        if (fabs(angleDiff) > maxDeviationAngle) {
-          // get as close as possible
-          float clampedAngleDiff = clamp(angleDiff, -maxDeviationAngle, maxDeviationAngle);
-          // SetYellowDebugPilon(GetTouchPos() + ballDirection * 3);
-          ballDirection = ballDirection.GetRotated2D(clampedAngleDiff);
-          // SetGreenDebugPilon(GetTouchPos() + ballDirection * 3);
-        } else {
-          ballDirection = ballDirectionAltered;
-        }
-
+        // GetShotVector reads the command, so commit the bounded aim correction
+        // before calculating trajectory, difficulty and spin.
+        currentAnim->originatingCommand.touchInfo.desiredDirection =
+            RefineShotDirection(ballDirection, ballDirectionAltered, 0.1f * pi);
         radian xRot = 0;
         radian yRot = 0;
         radian zRot = 0;

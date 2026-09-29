@@ -18,6 +18,7 @@
 #include "../../AIsupport/AIfunctions.hpp"
 #include "../../gameplaytuning.hpp"
 #include "../../match.hpp"
+#include "../../shotaim.hpp"
 #include "../playerbase.hpp"
 #include "animcollection.hpp"
 #include "humanoid.hpp"
@@ -436,6 +437,9 @@ Vector3 GetShotVector(Match* match, Player* player, const Vector3& nextStartPos,
                       const Anim* currentAnim, int frameNum, const SpatialState& spatialState,
                       const Vector3& positionOffset, radian& xRot, radian& yRot, radian& zRot,
                       float autoDirectionBias) {
+  const ShotStyle shotStyle = ResolveShotStyle(
+      (currentAnim->originatingCommand.modifier & e_PlayerCommandModifier_Chip) != 0,
+      (currentAnim->originatingCommand.modifier & e_PlayerCommandModifier_Finesse) != 0);
   Ball* ball = match->GetBall();
 
   const std::vector<Vector3>& origPositionCache = match->GetAnimPositionCache(currentAnim->anim);
@@ -563,10 +567,10 @@ Vector3 GetShotVector(Match* match, Player* player, const Vector3& nextStartPos,
   // best case result
 
   float desiredHeight = 0.05f;
-  if (currentAnim->originatingCommand.modifier & e_PlayerCommandModifier_Chip) {
+  if (shotStyle == ShotStyle::Chip) {
     desiredHeight = 0.42f;  // PES 5/6 scoop chip trajectory
     power = clamp(power * 0.62f, 10.0f, 26.0f);
-  } else if (currentAnim->originatingCommand.modifier & e_PlayerCommandModifier_Finesse) {
+  } else if (shotStyle == ShotStyle::Finesse) {
     desiredHeight = 0.08f;
     power = power * 0.88f;
   }
@@ -596,7 +600,7 @@ Vector3 GetShotVector(Match* match, Player* player, const Vector3& nextStartPos,
   worstCaseDirection.Normalize();
 
   float worstCaseHeight = curve(std::pow(difficultyFactor, 0.7f), 0.7f) * 0.7f;
-  if (currentAnim->originatingCommand.modifier & e_PlayerCommandModifier_Chip) {
+  if (shotStyle == ShotStyle::Chip) {
     worstCaseHeight = std::max(worstCaseHeight, 0.35f);
   }
 
@@ -613,7 +617,7 @@ Vector3 GetShotVector(Match* match, Player* player, const Vector3& nextStartPos,
 
   float worstCaseFactor = random(0.0f, 1.0f);
   worstCaseFactor = std::pow(worstCaseFactor, player->GetStat("technical_shot") * 0.7f);
-  if (currentAnim->originatingCommand.modifier & e_PlayerCommandModifier_Finesse) {
+  if (shotStyle == ShotStyle::Finesse) {
     worstCaseFactor *= 0.5f;  // PES controlled shot has higher placement precision
   }
 
@@ -625,7 +629,7 @@ Vector3 GetShotVector(Match* match, Player* player, const Vector3& nextStartPos,
   float plannedCurveFactor = 0.7f;  // todo: use curve as actual planned thing, not random :p
 
   // forward/backward 'curve' (chips get heavy backspin)
-  float backspinMult = (currentAnim->originatingCommand.modifier & e_PlayerCommandModifier_Chip) ? 2.5f : 1.0f;
+  float backspinMult = (shotStyle == ShotStyle::Chip) ? 2.5f : 1.0f;
   xRot = (-currentAnim->originatingCommand.touchInfo.desiredDirection.coords[1] * 20.0f * backspinMult) +
          (random(-20, 20) * randomCurveFactor);
   yRot = (-currentAnim->originatingCommand.touchInfo.desiredDirection.coords[0] * 20.0f * backspinMult) +
@@ -638,11 +642,11 @@ Vector3 GetShotVector(Match* match, Player* player, const Vector3& nextStartPos,
   bodyTouchAngle *= 2.0f;
   // printf("bodyTouchAngle: %f\n", bodyTouchAngle);
   radian amount = bodyTouchAngle * 0.25f;
-  if (currentAnim->originatingCommand.modifier & e_PlayerCommandModifier_Finesse) {
+  if (shotStyle == ShotStyle::Finesse) {
     amount = (fabs(amount) < 0.05f) ? (0.12f * (signSide(bodyTouchAngle) == 0 ? 1 : signSide(bodyTouchAngle))) : (amount * 1.7f);
   }
   shot.Rotate2D(amount * (0.4f + 0.6f * NormalizedClamp(shot.GetLength(), 0.0f, 70.0f)));
-  float finesseCurveGain = (currentAnim->originatingCommand.modifier & e_PlayerCommandModifier_Finesse) ? 1.6f : 1.0f;
+  float finesseCurveGain = (shotStyle == ShotStyle::Finesse) ? 1.6f : 1.0f;
   zRot = (amount * -420 * finesseCurveGain) + (random(-20, 20) * plannedCurveFactor);
 
   // SetRedDebugPilon(match->GetBall()->Predict(0).Get2D() + touchVec.Get2D() * 0.4f);

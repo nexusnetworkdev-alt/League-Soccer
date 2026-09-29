@@ -7,6 +7,10 @@
 
 #include "onthepitch/aitactics.hpp"
 #include "onthepitch/gameplaytuning.hpp"
+#include "onthepitch/sprinttap.hpp"
+#include "onthepitch/shotaim.hpp"
+#include "onthepitch/pendingcautions.hpp"
+#include "onthepitch/setpiecerules.hpp"
 
 namespace {
 
@@ -278,4 +282,196 @@ TEST(ClampUtilTest, Clamp01AlwaysInRange) {
   EXPECT_FLOAT_EQ(GameplayTuning::Clamp01(0.5f), 0.5f);
 }
 
+
+
+TEST(SprintTapTest, FirstPressAtKickoffDoesNotKnockOn) {
+  SprintTap tap;
+  tap.Update(0, true, true);
+  EXPECT_FALSE(tap.Consume());
+  tap.Update(100, true, true);
+  EXPECT_TRUE(tap.Consume());
+  EXPECT_FALSE(tap.Consume());
+}
+
+TEST(SprintTapTest, SlowSecondPressDoesNotKnockOn) {
+  SprintTap tap;
+  tap.Update(100, true, true);
+  tap.Update(380, true, true);
+  EXPECT_FALSE(tap.Consume());
+}
+
+TEST(SprintTapTest, UnconsumedKnockOnExpires) {
+  SprintTap tap;
+  tap.Update(100, true, true);
+  tap.Update(200, true, true);
+  tap.Update(480, false, true);
+  EXPECT_FALSE(tap.Consume());
+}
+
+TEST(SprintTapTest, SuperCancelOrStoppageDiscardsPendingTouch) {
+  SprintTap tap;
+  tap.Update(100, true, true);
+  tap.Update(200, true, true);
+  tap.Update(210, false, false);
+  EXPECT_FALSE(tap.Consume());
+  tap.Update(220, true, true);
+  EXPECT_FALSE(tap.Consume());
+}
+
+TEST(SprintTapTest, PlayerSwitchResetsDoubleTapHistory) {
+  SprintTap tap;
+  tap.Update(100, true, true);
+  tap.Reset();
+  tap.Update(200, true, true);
+  EXPECT_FALSE(tap.Consume());
+}
+
+TEST(SprintTapTest, HeldButtonDoesNotCreateDoubleTap) {
+  SprintTap tap;
+  tap.Update(100, true, true);
+  tap.Update(110, false, true);
+  tap.Update(120, false, true);
+  EXPECT_FALSE(tap.Consume());
+}
+
+TEST(AdvantageTest, EarlyMatchFoulKeepsItsGracePeriod) {
+  using namespace GameplayTuning;
+  EXPECT_EQ(EvaluateAdvantage(100, 100, true), AdvantageDecision::Continue);
+  EXPECT_EQ(EvaluateAdvantage(700, 100, true), AdvantageDecision::Continue);
+  EXPECT_EQ(EvaluateAdvantage(701, 100, true), AdvantageDecision::RecallFoul);
+}
+
+TEST(AdvantageTest, PossessionLossWithinWindowRecallsFoul) {
+  using namespace GameplayTuning;
+  EXPECT_EQ(EvaluateAdvantage(1500, 100, false), AdvantageDecision::Continue);
+  EXPECT_EQ(EvaluateAdvantage(1500, 100, true), AdvantageDecision::RecallFoul);
+  EXPECT_EQ(EvaluateAdvantage(3600, 100, true), AdvantageDecision::RecallFoul);
+  EXPECT_EQ(EvaluateAdvantage(3601, 100, true), AdvantageDecision::PlayedOut);
+}
+
+TEST(AdvantageTest, WindowIsRelativeToFoulTime) {
+  using namespace GameplayTuning;
+  EXPECT_EQ(EvaluateAdvantage(500100, 500000, true), AdvantageDecision::Continue);
+  EXPECT_EQ(EvaluateAdvantage(500601, 500000, true), AdvantageDecision::RecallFoul);
+  EXPECT_EQ(EvaluateAdvantage(503501, 500000, false), AdvantageDecision::PlayedOut);
+}
+
+TEST(PendingCautionsTest, AdvantageKeepsCautionUntilPlayStops) {
+  PendingCautions<int> cautions;
+  int player = 0;
+  cautions.Add(&player);
+  EXPECT_TRUE(cautions.TakeAtStoppage(true).empty());
+  EXPECT_EQ(cautions.CountFor(&player), 1);
+  const auto issued = cautions.TakeAtStoppage(false);
+  ASSERT_EQ(issued.size(), 1u);
+  EXPECT_EQ(issued[0], &player);
+  EXPECT_TRUE(cautions.TakeAtStoppage(false).empty());
+  EXPECT_EQ(cautions.CountFor(&player), 0);
+}
+
+TEST(PendingCautionsTest, LaterOffenceDoesNotEraseEarlierOffender) {
+  PendingCautions<int> cautions;
+  int first = 0, second = 0;
+  cautions.Add(&first);
+  cautions.Add(&second);
+  const auto issued = cautions.TakeAtStoppage(false);
+  ASSERT_EQ(issued.size(), 2u);
+  EXPECT_EQ(issued[0], &first);
+  EXPECT_EQ(issued[1], &second);
+}
+
+TEST(PendingCautionsTest, DistinctOffencesBySamePlayerAreRetained) {
+  PendingCautions<int> cautions;
+  int player = 0;
+  cautions.Add(&player);
+  cautions.Add(&player);
+  EXPECT_EQ(cautions.CountFor(&player), 2);
+  EXPECT_EQ(cautions.TakeAtStoppage(false).size(), 2u);
+}
+
+TEST(PendingCautionsTest, MissingOffenderIsIgnored) {
+  PendingCautions<int> cautions;
+  cautions.Add(nullptr);
+  EXPECT_TRUE(cautions.TakeAtStoppage(false).empty());
+}
+
+TEST(SetPieceRulesTest, DirectGoalKickCornerAndThrowInAreOffsideExempt) {
+  EXPECT_TRUE(IsOffsideExemptRestart(e_SetPiece_GoalKick));
+  EXPECT_TRUE(IsOffsideExemptRestart(e_SetPiece_Corner));
+  EXPECT_TRUE(IsOffsideExemptRestart(e_SetPiece_ThrowIn));
+}
+
+TEST(SetPieceRulesTest,OpenPlayAndOtherRestartsStillCheckOffside) {
+  EXPECT_FALSE(IsOffsideExemptRestart(e_SetPiece_None));
+  EXPECT_FALSE(IsOffsideExemptRestart(e_SetPiece_FreeKick));
+  EXPECT_FALSE(IsOffsideExemptRestart(e_SetPiece_KickOff));
+  EXPECT_FALSE(IsOffsideExemptRestart(e_SetPiece_Penalty));
+}
+TEST(ShotAimTest, SmallLateCorrectionReachesRequestedDirection) {
+  const blunted::Vector3 committed(1, 0, 0);
+  const auto requested = committed.GetRotated2D(0.1f);
+  const auto result = RefineShotDirection(committed, requested, 0.3f);
+  EXPECT_NEAR(result.GetDistance(requested), 0.0f, 0.0001f);
+}
+
+TEST(ShotAimTest, LargeCorrectionsStayWithinCommitmentInBothDirections) {
+  const blunted::Vector3 committed(1, 0, 0);
+  for (float direction : {-1.0f, 1.0f}) {
+    const auto requested = committed.GetRotated2D(direction * 1.0f);
+    const auto result = RefineShotDirection(committed, requested, 0.3f);
+    EXPECT_NEAR(result.GetAngle2D(committed), direction * 0.3f, 0.0001f);
+    EXPECT_NEAR(result.GetLength(), 1.0f, 0.0001f);
+  }
+}
+
+TEST(ShotAimTest, CorrectionAcrossAngleWrapUsesShortPath) {
+  const auto committed = blunted::Vector3(1, 0, 0).GetRotated2D(3.1f);
+  const auto requested = blunted::Vector3(1, 0, 0).GetRotated2D(-3.1f);
+  const auto result = RefineShotDirection(committed, requested, 0.3f);
+  EXPECT_NEAR(result.GetDistance(requested), 0.0f, 0.0001f);
+}
+
+TEST(ShotAimTest, ZeroAllowanceKeepsCommittedDirection) {
+  const blunted::Vector3 committed(1, 0, 0);
+  const blunted::Vector3 requested(0, 1, 0);
+  EXPECT_NEAR(RefineShotDirection(committed, requested, 0).GetDistance(committed), 0, 0.0001f);
+}
+
+TEST(ShotStyleTest, IndividualModifiersKeepTheirStyle) {
+  EXPECT_EQ(ResolveShotStyle(false, false), ShotStyle::Normal);
+  EXPECT_EQ(ResolveShotStyle(true, false), ShotStyle::Chip);
+  EXPECT_EQ(ResolveShotStyle(false, true), ShotStyle::Finesse);
+}
+
+TEST(ShotStyleTest, CombinedModifiersUseChipWithoutFinesseBonuses) {
+  EXPECT_EQ(ResolveShotStyle(true, true), ShotStyle::Chip);
+}
+TEST(TeammateRunsTest, SpaceProbeLooksTowardsOpponentGoalForEitherSide) {
+  EXPECT_FLOAT_EQ(AITactics::GetAttackingProbeX(20, 1, 10), 10);
+  EXPECT_FLOAT_EQ(AITactics::GetAttackingProbeX(-20, -1, 10), -10);
+  EXPECT_FLOAT_EQ(AITactics::GetAttackingProbeX(0, 1, 26), -26);
+  EXPECT_FLOAT_EQ(AITactics::GetAttackingProbeX(0, -1, 26), 26);
+}
+
+TEST(TeammateRunsTest, EligibleOutfieldTeammateCanRun) {
+  EXPECT_TRUE(AITactics::IsAutomaticRunnerEligible(true, false, false, false));
+}
+
+TEST(TeammateRunsTest, KeeperCarrierHumanAndInactivePlayersAreExcluded) {
+  EXPECT_FALSE(AITactics::IsAutomaticRunnerEligible(true, false, true, false));
+  EXPECT_FALSE(AITactics::IsAutomaticRunnerEligible(true, false, false, true));
+  EXPECT_FALSE(AITactics::IsAutomaticRunnerEligible(true, true, false, false));
+  EXPECT_FALSE(AITactics::IsAutomaticRunnerEligible(false, false, false, false));
+}
+
+TEST(TeammatePressureTest, SmallDistanceChangesDoNotSwapThePresser) {
+  EXPECT_TRUE(AITactics::ShouldKeepPressurePlayer(7.0f, 6.9f));
+  EXPECT_TRUE(AITactics::ShouldKeepPressurePlayer(7.0f, 5.5f));
+  EXPECT_TRUE(AITactics::ShouldKeepPressurePlayer(7.0f, 7.0f));
+}
+
+TEST(TeammatePressureTest, ClearlyBetterDefenderTakesOver) {
+  EXPECT_FALSE(AITactics::ShouldKeepPressurePlayer(7.0f, 5.4f));
+  EXPECT_FALSE(AITactics::ShouldKeepPressurePlayer(20.0f, 5.0f));
+}
 }  // namespace

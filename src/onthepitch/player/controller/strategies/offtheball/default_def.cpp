@@ -35,8 +35,12 @@ void DefaultDefenseStrategy::RequestInput(const MentalImage* mentalImage, Vector
         NormalizedClamp((controller->GetFadingTeamPossessionAmount() - 0.5f) * 1.0f, 0.2f, 0.9f);
     attackBias *= AITactics::GetDefenderSupportScale(
         AI_GetMindSet(CastPlayer()->GetDynamicFormationEntry().role));
+    // Explicit one-twos and selected overlap runs apply to defenders too.
+    const bool makeRun = attackBias > 0.7f &&
+        team->GetController()->GetEndApplyAttackingRun_ms() > match->GetActualTime_ms() &&
+        team->GetController()->GetAttackingRunPlayer() == player;
     Vector3 supportPosition =
-        controller->GetSupportPosition_ForceField(mentalImage, desiredPosition);
+        controller->GetSupportPosition_ForceField(mentalImage, desiredPosition, makeRun);
     desiredPosition = desiredPosition * (1.0f - attackBias) + supportPosition * attackBias;
   }
 

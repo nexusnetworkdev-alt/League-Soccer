@@ -94,14 +94,28 @@ TeamAIController::~TeamAIController() {
 
 Player* SelectAttackingRunPlayer(Team* team) {
   Player* possessionPlayer = team->GetDesignatedTeamPossessionPlayer();
+  if (!possessionPlayer)
+    return nullptr;
 
-  Vector3 offenseFocusPos =
-      possessionPlayer->GetPosition() + Vector3(-team->GetSide() * 26.0f, 0, 0);
-
-  Player* attackingRunPlayer = AI_GetClosestPlayer(team, offenseFocusPos, true, possessionPlayer);
-  return attackingRunPlayer;
+  Vector3 offenseFocusPos = possessionPlayer->GetPosition();
+  offenseFocusPos.coords[0] = AITactics::GetAttackingProbeX(
+      offenseFocusPos.coords[0], team->GetSide(), 26.0f);
+  Player* runner = nullptr;
+  float closestDistance = 10000.0f;
+  for (const auto& candidate : team->GetAllPlayers()) {
+    if (!AITactics::IsAutomaticRunnerEligible(
+            candidate->IsActive(), team->IsHumanControlled(candidate->GetID()),
+            candidate->GetDynamicFormationEntry().role == e_PlayerRole_GK,
+            candidate.get() == possessionPlayer))
+      continue;
+    const float distance = (candidate->GetPosition() - offenseFocusPos).GetLength();
+    if (distance < closestDistance) {
+      closestDistance = distance;
+      runner = candidate.get();
+    }
+  }
+  return runner;
 }
-
 void TeamAIController::Process() {
   if (match->GetActualTime_ms() % 1000 == 0)
     UpdateTactics();
@@ -278,7 +292,7 @@ void TeamAIController::Process() {
           // more likely to run when there's less defenders in front
           std::vector<Player*> opponents;
           Vector3 spot = runner->GetPosition() * Vector3(1.0f, 0.8f, 0.0f) +
-                         Vector3(team->GetSide() * 10.0f, 0, 0);
+                         Vector3(AITactics::GetAttackingProbeX(0.0f, team->GetSide(), 10.0f), 0, 0);
           AI_GetClosestPlayers(team->GetMatch()->GetTeam(abs(team->GetID() - 1)), spot, false,
                                opponents, 4);
           float oppDensityRating = 1.0f;
@@ -292,7 +306,7 @@ void TeamAIController::Process() {
           float runConditionsRating = distanceRating * oppDensityRating;
 
           if (runConditionsRating >= neededRating) {
-            ApplyAttackingRun();
+            ApplyAttackingRun(runner);
             if (Verbose())
               printf("!!! tactics induced run !!!\n");
           }
@@ -1144,6 +1158,8 @@ void TeamAIController::ApplyAttackingRun(Player* manualPlayer) {
 }
 
 void TeamAIController::ApplyTeamPressure() {
+  Player* previousPresser = endApplyTeamPressure_ms > match->GetActualTime_ms()
+                                ? teamPressurePlayer : nullptr;
   endApplyTeamPressure_ms = match->GetActualTime_ms() + 500;
 
   Player* opp = match->GetTeam(abs(team->GetID() - 1))->GetBestPossessionPlayer();
@@ -1161,18 +1177,24 @@ void TeamAIController::ApplyTeamPressure() {
   const Vector3 pressureTarget = opponentPos + Vector3(team->GetSide() * 1.0f, 0, 0);
   AI_GetClosestPlayers(team, pressureTarget, true, candidates, playerNum);
   float bestPressureRating = 1000.0f;
+  float previousPressureRating = 10000.0f;
   for (Player* candidate : candidates) {
     if (candidate != primaryDefender && candidate != team->GetGoalie()) {
       const float distance = (candidate->GetPosition() - pressureTarget).GetLength();
       const float rolePenalty = AITactics::GetSecondaryPressureRolePenalty(
           AI_GetMindSet(candidate->GetDynamicFormationEntry().role));
       const float pressureRating = distance + rolePenalty;
+      if (candidate == previousPresser)
+        previousPressureRating = pressureRating;
       if (pressureRating < bestPressureRating) {
         bestPressureRating = pressureRating;
         teamPressurePlayer = candidate;
       }
     }
   }
+
+  if (previousPresser && AITactics::ShouldKeepPressurePlayer(previousPressureRating, bestPressureRating))
+    teamPressurePlayer = previousPresser;
 
   // Do not alter the player's persistent man-marking assignment here. The
   // pressure override is intentionally temporary and is already identified by
@@ -1208,10 +1230,13 @@ Player* TeamAIController::ConsumePassRequest(Player* passer) {
 
   if (IsPassRequestExpired(match->GetActualTime_ms(), passRequestExpires_ms) ||
       !passRequestTarget->IsActive() || !team->IsHumanControlled(passRequestTarget->GetID()) ||
-      passRequestTarget == passer || match->GetDesignatedPossessionPlayer() != passer) {
+      passRequestTarget == match->GetDesignatedPossessionPlayer()) {
     ClearPassRequest();
     return 0;
   }
+
+  if (!passer || match->GetDesignatedPossessionPlayer() != passer)
+    return nullptr;
 
   Player* target = passRequestTarget;
   ClearPassRequest();

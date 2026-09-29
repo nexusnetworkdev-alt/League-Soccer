@@ -414,6 +414,10 @@ set(GAME_HEADERS
    src/onthepitch/humanspeed.hpp
    src/onthepitch/matchduration.hpp
    src/onthepitch/playercontrolsettings.hpp
+   src/onthepitch/sprinttap.hpp
+   src/onthepitch/shotaim.hpp
+   src/onthepitch/pendingcautions.hpp
+   src/onthepitch/setpiecerules.hpp
    src/onthepitch/humangamer.hpp
    src/onthepitch/officials.hpp
    src/onthepitch/player/humanoid/humanoidbase.hpp

@@ -8,6 +8,21 @@
 
 namespace AITactics {
 
+// Coordinates use teamSide for the own goal, so forward is its negative.
+inline float GetAttackingProbeX(float playerX, int teamSide, float lead) {
+  return playerX - static_cast<float>(teamSide) * std::max(0.0f, lead);
+}
+
+inline bool IsAutomaticRunnerEligible(bool active, bool humanControlled,
+                                      bool goalkeeper, bool ballCarrier) {
+  return active && !humanControlled && !goalkeeper && !ballCarrier;
+}
+
+// Keep a closing defender committed unless a replacement is clearly better.
+// Ratings are distance in metres plus a positional-role penalty.
+inline bool ShouldKeepPressurePlayer(float currentRating, float bestRating) {
+  return currentRating <= bestRating + 1.5f;
+}
 inline float ClampSetting(float value) {
   return std::max(0.0f, std::min(value, 1.0f));
 }

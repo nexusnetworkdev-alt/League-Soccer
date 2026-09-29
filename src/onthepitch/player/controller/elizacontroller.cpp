@@ -727,6 +727,8 @@ Vector3 ElizaController::GetSupportPosition(const MentalImage* mentalImage,
 Vector3 ElizaController::GetSupportPosition_ForceField(const MentalImage* mentalImage,
                                                        const Vector3& basePosition, bool makeRun) {
   Player* designatedPlayer = team->GetDesignatedTeamPossessionPlayer();
+  if (!designatedPlayer)
+    return basePosition;
 
   Vector3 currentPos = player->GetPosition() + CastPlayer()->GetMovement() * 0.1f;  // basePosition;
   Vector3 mainManPos = designatedPlayer->GetPosition() + designatedPlayer->GetMovement() * 0.1f;
