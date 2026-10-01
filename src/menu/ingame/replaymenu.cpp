@@ -8,7 +8,6 @@
 #include "framework/scheduler.hpp"
 #include "main.hpp"
 #include "managers/environmentmanager.hpp"
-#include "soccerverseguidedcontroller.hpp"
 #include "utils/gui2/widgets/caption.hpp"
 #include "utils/gui2/widgets/frame.hpp"
 #include "utils/localization.hpp"
@@ -35,6 +34,8 @@ ReplayPage::ReplayPage(Gui2WindowManager* windowManager, const Gui2PageData& pag
   soccerverseDemoFinished = false;
   soccerverseOutcomeNudgeApplied = false;
   soccerverseGoalObserved = false;
+  soccerversePassAnchorSent = false;
+  soccerverseShotAnchorSent = false;
   soccerverseDemoStart_ms = 0;
   soccerverseDemoElapsed_ms = 0;
   soccerverseDemoDuration_ms = 12000;
@@ -237,6 +238,8 @@ void ReplayPage::SetupSoccerverseGuidedSimulation() {
   soccerverseDemoFinished = false;
   soccerverseOutcomeNudgeApplied = false;
   soccerverseGoalObserved = false;
+  soccerversePassAnchorSent = false;
+  soccerverseShotAnchorSent = false;
   soccerverseDemoElapsed_ms = 0;
   soccerverseAllPlayers.clear();
   soccerversePreviousExternalControllers.clear();
@@ -289,33 +292,17 @@ void ReplayPage::SetupSoccerverseGuidedSimulation() {
 
   soccerverseAllPlayers.insert(soccerverseAllPlayers.end(), homePlayers.begin(), homePlayers.end());
   soccerverseAllPlayers.insert(soccerverseAllPlayers.end(), awayPlayers.begin(), awayPlayers.end());
-  for (Player* player : soccerverseAllPlayers)
+
+  // Stability invariant: the guided Director never owns player controllers.
+  // Preserve any pre-existing external controllers, then return all 22 players
+  // directly to League-Soccer's native controller before play resumes.
+  for (Player* player : soccerverseAllPlayers) {
     soccerversePreviousExternalControllers.push_back(player->GetExternalController());
-
-  for (unsigned int i = 0; i < homePlayers.size(); ++i) {
-    SoccerverseGuidedController* controller = new SoccerverseGuidedController(
-        match, homeSlots[i], false, SoccerverseGuideRole::Shape, nullptr, soccerverseDemoStart_ms);
-    soccerverseGuideControllers.push_back(controller);
-    homePlayers[i]->SetExternalController(controller);
+    player->SetExternalController(nullptr);
   }
 
-  for (unsigned int i = 0; i < awayPlayers.size(); ++i) {
-    SoccerverseGuideRole role = SoccerverseGuideRole::Shape;
-    Player* target = nullptr;
-    if (awayPlayers[i] == soccerversePasser) {
-      role = SoccerverseGuideRole::Passer;
-      target = soccerverseRunner;
-    } else if (awayPlayers[i] == soccerverseRunner) {
-      role = SoccerverseGuideRole::RunnerShooter;
-    }
-    SoccerverseGuidedController* controller = new SoccerverseGuidedController(
-        match, awaySlots[i], true, role, target, soccerverseDemoStart_ms);
-    soccerverseGuideControllers.push_back(controller);
-    awayPlayers[i]->SetExternalController(controller);
-  }
-
-  // One reconstructed spatial anchor only: start the factual event with Kalulu in possession.
-  // From here the ball and all players are driven by League-Soccer physics/commands.
+  // Reconstructed spatial start only. Subsequent factual intervention is limited
+  // to discrete one-shot ball anchors in ProcessSoccerverseGuidedSimulation().
   const float awaySide = static_cast<float>(soccerversePasser->GetTeam()->GetSide());
   Vector3 ballStart =
       soccerversePasser->GetPosition() + Vector3(-awaySide * 0.45f, 0.0f, 0.11f);
@@ -337,9 +324,6 @@ void ReplayPage::StopSoccerverseGuidedSimulation() {
   for (unsigned int i = 0; i < restoreCount; ++i)
     soccerverseAllPlayers[i]->SetExternalController(soccerversePreviousExternalControllers[i]);
 
-  for (IController* controller : soccerverseGuideControllers)
-    delete controller;
-
   soccerverseGuideControllers.clear();
   soccerversePreviousExternalControllers.clear();
   soccerverseAllPlayers.clear();
@@ -352,7 +336,7 @@ void ReplayPage::ResetSoccerverseGuidedSimulation() {
 }
 
 void ReplayPage::ProcessSoccerverseGuidedSimulation() {
-  if (soccerverseDemoFinished || !soccerverseRunner)
+  if (soccerverseDemoFinished || !soccerversePasser || !soccerverseRunner)
     return;
 
   const unsigned long now_ms = EnvironmentManager::GetInstance().GetTime_ms();
@@ -364,12 +348,43 @@ void ReplayPage::ProcessSoccerverseGuidedSimulation() {
     soccerverseGoalObserved = true;
   }
 
-  // Hard-outcome safety net. It is deliberately one-shot, not frame-by-frame tracking:
-  // if native AI/physics have not completed the factual goal by this point, preserve the
-  // Soccerverse outcome with one constrained shot impulse from Vlahovic's vicinity.
+  const float side = static_cast<float>(soccerversePasser->GetTeam()->GetSide());
+
+  // Factual anchor 1: Kalulu -> Vlahovic. This lives in the Director, not a
+  // Player controller, so all 22 players keep native AI/animation ownership.
+  if (!soccerversePassAnchorSent && soccerverseDemoElapsed_ms >= 1200) {
+    const Vector3 origin =
+        soccerversePasser->GetPosition() + Vector3(-side * 0.50f, 0.0f, 0.13f);
+    const Vector3 target =
+        soccerverseRunner->GetPosition() + Vector3(-side * 1.2f, 0.0f, 0.10f);
+    const Vector3 passVelocity =
+        (target - origin).GetNormalized(Vector3(-side, 0.0f, 0.0f)) * 18.0f;
+    match->SetBallRetainer(nullptr);
+    match->GetBall()->SetPosition(origin);
+    match->GetBall()->SetMomentum(passVelocity);
+    soccerversePassAnchorSent = true;
+    match->SpamMessage("SV anchor: Kalulu -> Vlahovic", 1800);
+  }
+
+  // Factual anchor 2: reconcile once at Vlahovic's current feet and launch the
+  // shot. Again, no player controller is replaced and no per-frame tracking is used.
+  if (!soccerverseShotAnchorSent && soccerverseDemoElapsed_ms >= 3800) {
+    const Vector3 origin =
+        soccerverseRunner->GetPosition() + Vector3(-side * 0.52f, 0.0f, 0.14f);
+    const Vector3 goalTarget(-side * (pitchHalfW + 1.6f), 1.6f, 1.05f);
+    const Vector3 shotVelocity =
+        (goalTarget - origin).GetNormalized(Vector3(-side, 0.0f, 0.0f)) * 32.0f;
+    match->SetBallRetainer(nullptr);
+    match->GetBall()->SetPosition(origin);
+    match->GetBall()->SetMomentum(shotVelocity);
+    soccerverseShotAnchorSent = true;
+    match->SpamMessage("SV anchor: Vlahovic -> GOAL", 2200);
+  }
+
+  // Hard-outcome safety net. It remains one-shot and only applies if native
+  // reactions/physics have not produced the factual goal after the visible shot.
   if (!soccerverseGoalObserved && !soccerverseOutcomeNudgeApplied &&
       soccerverseDemoElapsed_ms >= 7200) {
-    const float side = static_cast<float>(soccerverseRunner->GetTeam()->GetSide());
     Vector3 origin = match->GetBall()->Predict(0);
     if (origin.Get2D().GetDistance(soccerverseRunner->GetPosition().Get2D()) > 4.0f) {
       origin = soccerverseRunner->GetPosition() + Vector3(-side * 0.55f, 0.0f, 0.14f);
