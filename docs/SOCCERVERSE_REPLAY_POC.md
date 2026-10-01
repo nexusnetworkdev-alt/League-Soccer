@@ -52,3 +52,7 @@ The PoC restores the live visual positions when leaving the replay page.
 ## Next milestone
 
 If the visual result is acceptable, replace the fixture-specific data with a generic external replay schema and add event-aware animation selection, player identity mapping and formation context.
+
+## CI note
+
+GitHub Actions was enabled on the fork after the initial pull request was opened. This documentation-only commit intentionally retriggers the pull-request workflow so the PoC branch can be compiled and validated on Linux, macOS and Windows before any merge.
