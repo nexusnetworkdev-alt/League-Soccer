@@ -52,6 +52,8 @@ protected:
   bool soccerverseDemoFinished;
   bool soccerverseOutcomeNudgeApplied;
   bool soccerverseGoalObserved;
+  bool soccerversePassAnchorSent;
+  bool soccerverseShotAnchorSent;
   unsigned long soccerverseDemoStart_ms;
   unsigned long soccerverseDemoElapsed_ms;
   unsigned long soccerverseDemoDuration_ms;
