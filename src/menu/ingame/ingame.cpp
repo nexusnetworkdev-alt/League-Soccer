@@ -141,6 +141,12 @@ IngamePage::IngamePage(Gui2WindowManager* windowManager, const Gui2PageData& pag
   buttonReplay->sig_OnClick.connect([this](...) { GoReplay(); });
   grid->AddView(buttonReplay, row++, 0);
 
+  Gui2Button* buttonSoccerverseReplay =
+      new Gui2Button(windowManager, "button_soccerverse_replay_387016", 0, 0, 36, 3,
+                     "Soccerverse #387016 - 3D PoC");
+  buttonSoccerverseReplay->sig_OnClick.connect([this](...) { GoSoccerverseReplay387016(); });
+  grid->AddView(buttonSoccerverseReplay, row++, 0);
+
   Gui2Caption* exitLabel =
       new Gui2Caption(windowManager, "caption_ingame_section_exit", 0, 0, 36, 2,
                       Localization::GetInstance().Translate("ingame_section_match"));
@@ -207,6 +213,12 @@ void IngamePage::GoSystemSettings() {
 
 void IngamePage::GoReplay() {
   CreatePage(e_PageID_Replay);
+}
+
+void IngamePage::GoSoccerverseReplay387016() {
+  Properties properties;
+  properties.SetBool("soccerverse_demo_387016", true);
+  CreatePage(e_PageID_Replay, properties);
 }
 
 void IngamePage::GoPreQuit() {
