@@ -25,6 +25,16 @@ protected:
   void ProcessInput(const Vector3& direction, bool button1, bool button2, bool slowMotion);
   void UpdateTimeLabel();
 
+  void SetupSoccerverseGuidedSimulation();
+  void StopSoccerverseGuidedSimulation();
+  void ProcessSoccerverseGuidedSimulation();
+  void ResetSoccerverseGuidedSimulation();
+  Player* FindGoalkeeper(const std::vector<Player*>& players) const;
+  Player* FindRoleCandidate(const std::vector<Player*>& players, e_PlayerRole primaryRole,
+                            e_PlayerRole secondaryRole, Player* exclude = nullptr) const;
+  void PlaceTeamIn442(const std::vector<Player*>& players, std::vector<int>& assignedSlots);
+  Vector3 Get442StartPosition(Player* player, int slot) const;
+
   signed long actualTime_ms;
   unsigned long minTime_ms;
   unsigned long maxTime_ms;
@@ -37,6 +47,23 @@ protected:
   bool stayInReplay;
   bool slowMotion;
   bool closeWhenAutorunCompletes;
+
+  bool soccerverseDemo;
+  bool soccerverseDemoFinished;
+  bool soccerverseOutcomeNudgeApplied;
+  bool soccerverseGoalObserved;
+  bool soccerversePassAnchorSent;
+  bool soccerverseShotAnchorSent;
+  unsigned long soccerverseDemoStart_ms;
+  unsigned long soccerverseDemoElapsed_ms;
+  unsigned long soccerverseDemoDuration_ms;
+  int soccerverseStartAwayScore;
+  std::vector<Player*> soccerverseAllPlayers;
+  std::vector<IController*> soccerversePreviousExternalControllers;
+  std::vector<IController*> soccerverseGuideControllers;
+  Player* soccerversePasser;
+  Player* soccerverseRunner;
+  Player* soccerverseHomeGoalkeeper;
 
   Gui2Caption* timeLabel;
 };
