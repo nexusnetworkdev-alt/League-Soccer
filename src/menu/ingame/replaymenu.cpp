@@ -38,7 +38,7 @@ ReplayPage::ReplayPage(Gui2WindowManager* windowManager, const Gui2PageData& pag
   soccerverseShotAnchorSent = false;
   soccerverseDemoStart_ms = 0;
   soccerverseDemoElapsed_ms = 0;
-  soccerverseDemoDuration_ms = 12000;
+  soccerverseDemoDuration_ms = 4200;
   soccerverseStartAwayScore = 0;
   soccerversePasser = nullptr;
   soccerverseRunner = nullptr;
@@ -267,58 +267,52 @@ void ReplayPage::SetupSoccerverseGuidedSimulation() {
   PlaceTeamIn442(homePlayers, homeSlots);
   PlaceTeamIn442(awayPlayers, awaySlots);
 
-  // Ensure the stand-ins for the source actors occupy plausible historical role slots:
-  // Kalulu at DMC/CM, Vlahovic as one of the two forwards.
-  auto moveActorToSlot = [](const std::vector<Player*>& players, std::vector<int>& slots,
-                            Player* actor, int desiredSlot) {
-    int actorIndex = -1;
-    int slotIndex = -1;
-    for (unsigned int i = 0; i < players.size(); ++i) {
-      if (players[i] == actor)
-        actorIndex = static_cast<int>(i);
-      if (slots[i] == desiredSlot)
-        slotIndex = static_cast<int>(i);
-    }
-    if (actorIndex >= 0 && slotIndex >= 0 && actorIndex != slotIndex)
-      std::swap(slots[actorIndex], slots[slotIndex]);
-  };
-  moveActorToSlot(awayPlayers, awaySlots, soccerversePasser, 7);
-  moveActorToSlot(awayPlayers, awaySlots, soccerverseRunner, 9);
-  for (unsigned int i = 0; i < awayPlayers.size(); ++i)
-    awayPlayers[i]->ResetPosition(Get442StartPosition(awayPlayers[i], awaySlots[i]), Vector3(0.0f));
-
-  soccerverseDemoStart_ms = EnvironmentManager::GetInstance().GetTime_ms();
-  soccerverseStartAwayScore = match->GetScore(1);
+  // Keep the 4-4-2 block alive, but reconstruct this event in the attacking
+  // third instead of starting Kalulu near midfield. These are reconstructed
+  // spatial positions, never claimed as historical Soccerverse tracking.
+  const float awaySide = static_cast<float>(soccerversePasser->GetTeam()->GetSide());
+  const Vector3 goalCentre(-awaySide * pitchHalfW, 0.0f, 0.0f);
+  const Vector3 passerStart(-awaySide * 18.0f, 5.5f, 0.0f);
+  const Vector3 runnerStart(-awaySide * 31.0f, 1.5f, 0.0f);
+  soccerversePasser->ResetPosition(passerStart, runnerStart);
+  soccerverseRunner->ResetPosition(runnerStart, goalCentre);
+  soccerverseHomeGoalkeeper->ResetPosition(Vector3(-awaySide * 50.4f, 0.0f, 0.0f), runnerStart);
 
   soccerverseAllPlayers.insert(soccerverseAllPlayers.end(), homePlayers.begin(), homePlayers.end());
   soccerverseAllPlayers.insert(soccerverseAllPlayers.end(), awayPlayers.begin(), awayPlayers.end());
 
-  // Stability invariant: the guided Director never owns player controllers.
-  // Preserve any pre-existing external controllers, then return all 22 players
-  // directly to League-Soccer's native controller before play resumes.
+  // Stability invariant: the Director never owns player controllers.
   for (Player* player : soccerverseAllPlayers) {
     soccerversePreviousExternalControllers.push_back(player->GetExternalController());
     player->SetExternalController(nullptr);
   }
 
-  // Reconstructed spatial start only. Subsequent factual intervention is limited
-  // to discrete one-shot ball anchors in ProcessSoccerverseGuidedSimulation().
-  const float awaySide = static_cast<float>(soccerversePasser->GetTeam()->GetSide());
-  Vector3 ballStart =
-      soccerversePasser->GetPosition() + Vector3(-awaySide * 0.45f, 0.0f, 0.11f);
+  // Clear stale possession/AI/ball state from the live match before starting
+  // the isolated golden action. Player positions stay reconstructed above.
+  match->ResetSituation(passerStart);
+  soccerversePasser->ResetPosition(passerStart, runnerStart);
+  soccerverseRunner->ResetPosition(runnerStart, goalCentre);
+  soccerverseHomeGoalkeeper->ResetPosition(Vector3(-awaySide * 50.4f, 0.0f, 0.0f), runnerStart);
+
+  const Vector3 ballStart = passerStart + Vector3(-awaySide * 0.45f, 0.0f, 0.11f);
   match->GetBall()->SetPosition(ballStart);
   match->GetBall()->SetMomentum(Vector3(0.0f));
-  match->SetBallRetainer(nullptr);
+  match->SetBallRetainer(soccerversePasser);
   match->SetGoalScored(false);
   match->StopSetPiece();
   match->StartPlay();
   match->SetAutoUpdateIngameCamera(false);
+
+  soccerverseDemoStart_ms = EnvironmentManager::GetInstance().GetTime_ms();
+  soccerverseStartAwayScore = match->GetScore(1);
   match->Pause(false);
 
-  match->SpamMessage("SV 68': Kalulu -> Vlahovic -> GOAL | Guided Sim v2", 3500);
+  match->SpamMessage("SV 68': Kalulu -> Vlahovic -> GOAL | single action", 2200);
 }
 
 void ReplayPage::StopSoccerverseGuidedSimulation() {
+  match->SetBallRetainer(nullptr);
+
   const unsigned int restoreCount = std::min(soccerverseAllPlayers.size(),
                                               soccerversePreviousExternalControllers.size());
   for (unsigned int i = 0; i < restoreCount; ++i)
@@ -350,49 +344,60 @@ void ReplayPage::ProcessSoccerverseGuidedSimulation() {
 
   const float side = static_cast<float>(soccerversePasser->GetTeam()->GetSide());
 
-  // Factual anchor 1: Kalulu -> Vlahovic. This lives in the Director, not a
-  // Player controller, so all 22 players keep native AI/animation ownership.
-  if (!soccerversePassAnchorSent && soccerverseDemoElapsed_ms >= 1200) {
+  // Start the factual action almost immediately. The native AI remains alive,
+  // but it no longer gets 1.2 seconds to invent a different opening possession.
+  if (!soccerversePassAnchorSent && soccerverseDemoElapsed_ms >= 250) {
     const Vector3 origin =
-        soccerversePasser->GetPosition() + Vector3(-side * 0.50f, 0.0f, 0.13f);
+        soccerversePasser->GetPosition() + Vector3(-side * 0.48f, 0.0f, 0.13f);
     const Vector3 target =
-        soccerverseRunner->GetPosition() + Vector3(-side * 1.2f, 0.0f, 0.10f);
+        soccerverseRunner->GetPosition() + Vector3(-side * 0.75f, 0.0f, 0.10f);
     const Vector3 passVelocity =
-        (target - origin).GetNormalized(Vector3(-side, 0.0f, 0.0f)) * 18.0f;
+        (target - origin).GetNormalized(Vector3(-side, 0.0f, 0.0f)) * 17.0f;
     match->SetBallRetainer(nullptr);
+    match->GetTeam(soccerversePasser->GetTeamID())
+        ->SetLastTouchPlayer(soccerversePasser, e_TouchType_Intentional_Kicked);
     match->GetBall()->SetPosition(origin);
     match->GetBall()->SetMomentum(passVelocity);
     soccerversePassAnchorSent = true;
-    match->SpamMessage("SV anchor: Kalulu -> Vlahovic", 1800);
+    match->SpamMessage("SV: Kalulu -> Vlahovic", 1200);
   }
 
-  // Factual anchor 2: reconcile once at Vlahovic's current feet and launch the
-  // shot. Again, no player controller is replaced and no per-frame tracking is used.
-  if (!soccerverseShotAnchorSent && soccerverseDemoElapsed_ms >= 3800) {
+  // One reconciliation at Vlahovic's feet, then one hard factual shot. Aim
+  // across the goalkeeper and inside the far corner so the native goal detector
+  // sees an actual line crossing rather than an artificial score mutation.
+  if (!soccerverseShotAnchorSent && soccerverseDemoElapsed_ms >= 1350) {
     const Vector3 origin =
-        soccerverseRunner->GetPosition() + Vector3(-side * 0.52f, 0.0f, 0.14f);
-    const Vector3 goalTarget(-side * (pitchHalfW + 1.6f), 1.6f, 1.05f);
+        soccerverseRunner->GetPosition() + Vector3(-side * 0.50f, 0.0f, 0.14f);
+    const float farCornerY = origin.coords[1] >= 0.0f ? -2.85f : 2.85f;
+    const Vector3 goalTarget(-side * (pitchHalfW + 1.4f), farCornerY, 1.35f);
     const Vector3 shotVelocity =
-        (goalTarget - origin).GetNormalized(Vector3(-side, 0.0f, 0.0f)) * 32.0f;
+        (goalTarget - origin).GetNormalized(Vector3(-side, 0.0f, 0.0f)) * 40.0f;
     match->SetBallRetainer(nullptr);
+    match->GetTeam(soccerverseRunner->GetTeamID())
+        ->SetLastTouchPlayer(soccerverseRunner, e_TouchType_Intentional_Kicked);
     match->GetBall()->SetPosition(origin);
     match->GetBall()->SetMomentum(shotVelocity);
     soccerverseShotAnchorSent = true;
-    match->SpamMessage("SV anchor: Vlahovic -> GOAL", 2200);
+    match->SpamMessage("SV: Vlahovic -> GOAL", 1500);
   }
 
-  // Hard-outcome safety net. It remains one-shot and only applies if native
-  // reactions/physics have not produced the factual goal after the visible shot.
-  if (!soccerverseGoalObserved && !soccerverseOutcomeNudgeApplied &&
-      soccerverseDemoElapsed_ms >= 7200) {
+  // Safety net only if the keeper/physics deflect the factual shot. Prefer a
+  // continuation from the current ball when it is still close to goal; only
+  // reconcile near Vlahovic when the native sim has sent it far away.
+  if (!soccerverseGoalObserved && soccerverseShotAnchorSent && !soccerverseOutcomeNudgeApplied &&
+      soccerverseDemoElapsed_ms >= 2600) {
     Vector3 origin = match->GetBall()->Predict(0);
-    if (origin.Get2D().GetDistance(soccerverseRunner->GetPosition().Get2D()) > 4.0f) {
+    const Vector3 goalMouth(-side * pitchHalfW, 0.0f, 1.0f);
+    if (origin.Get2D().GetDistance(goalMouth.Get2D()) > 14.0f) {
       origin = soccerverseRunner->GetPosition() + Vector3(-side * 0.55f, 0.0f, 0.14f);
       match->GetBall()->SetPosition(origin);
     }
-    const Vector3 goalTarget(-side * (pitchHalfW + 1.2f), 2.3f, 1.25f);
+    const float cornerY = origin.coords[1] >= 0.0f ? -2.6f : 2.6f;
+    const Vector3 goalTarget(-side * (pitchHalfW + 1.5f), cornerY, 1.15f);
     const Vector3 shotVelocity =
-        (goalTarget - origin).GetNormalized(Vector3(-side, 0.0f, 0.0f)) * 31.0f;
+        (goalTarget - origin).GetNormalized(Vector3(-side, 0.0f, 0.0f)) * 42.0f;
+    match->GetTeam(soccerverseRunner->GetTeamID())
+        ->SetLastTouchPlayer(soccerverseRunner, e_TouchType_Intentional_Kicked);
     match->GetBall()->SetMomentum(shotVelocity);
     soccerverseOutcomeNudgeApplied = true;
   }
@@ -400,7 +405,13 @@ void ReplayPage::ProcessSoccerverseGuidedSimulation() {
   const Vector3 ballPosition = match->GetBall()->Predict(0);
   match->SetReplayCamera(cam, ballPosition, modifierValue);
 
-  if (soccerverseDemoElapsed_ms >= soccerverseDemoDuration_ms) {
+  // Once the factual goal exists, do not let the referee/AI create the next
+  // restart sequence. Hold the goal briefly, then freeze the golden clip.
+  if (soccerverseGoalObserved && soccerverseShotAnchorSent && soccerverseDemoElapsed_ms >= 2300) {
+    soccerverseDemoFinished = true;
+    match->Pause(true);
+    match->SpamMessage("SV 68': Kalulu -> Vlahovic -> GOAL | GOAL OK", 5000);
+  } else if (soccerverseDemoElapsed_ms >= soccerverseDemoDuration_ms) {
     soccerverseDemoElapsed_ms = soccerverseDemoDuration_ms;
     soccerverseDemoFinished = true;
     match->Pause(true);
@@ -440,7 +451,7 @@ void ReplayPage::Autorun(int replayHistoryOffset_ms, bool stayInReplay) {
 
 void ReplayPage::UpdateTimeLabel() {
   if (soccerverseDemo) {
-    std::string label = "SV #387016 | 68' | 4-4-2 vs 4-4-2 | Kalulu > Vlahovic > GOAL | " +
+    std::string label = "SV #387016 | 68' | Kalulu > Vlahovic > GOAL | " +
                         int_to_str(soccerverseDemoElapsed_ms / 1000) + "s / " +
                         int_to_str(soccerverseDemoDuration_ms / 1000) + "s";
     if (soccerverseGoalObserved)
