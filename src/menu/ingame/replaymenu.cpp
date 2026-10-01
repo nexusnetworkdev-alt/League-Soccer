@@ -15,6 +15,15 @@ ReplayPage::ReplayPage(Gui2WindowManager* windowManager, const Gui2PageData& pag
     : Gui2Page(windowManager, pageData) {
   match = GetGameTask()->GetMatch();
 
+  soccerverseDemo = pageData.properties && pageData.properties->GetBool("soccerverse_demo_387016", false);
+  soccerverseDemoFinished = false;
+  soccerverseDemoStart_ms = 0;
+  soccerverseDemoElapsed_ms = 0;
+  soccerverseDemoDuration_ms = 8500;
+  soccerverseGoalkeeper = nullptr;
+  soccerverseOriginalBallPosition = Vector3(0);
+  soccerverseOriginalBallMomentum = Vector3(0);
+
   this->SetFocus();
   this->Show();
 
@@ -33,22 +42,26 @@ ReplayPage::ReplayPage(Gui2WindowManager* windowManager, const Gui2PageData& pag
   stayInReplay = true;
   closeWhenAutorunCompletes = false;
 
-  Gui2Frame* header = new Gui2Frame(windowManager, "frame_replay_header", 36, 2, 28, 7, true);
+  Gui2Frame* header = new Gui2Frame(windowManager, "frame_replay_header", 32, 2, 36, 7, true);
   this->AddView(header);
   header->Show();
+  const std::string titleText = soccerverseDemo
+                                    ? "Soccerverse #387016 - 3D PoC"
+                                    : Localization::GetInstance().Translate("ingame_replay_title");
   Gui2Caption* title =
-      new Gui2Caption(windowManager, "caption_replay_title", 2, 2, 24, 3,
-                      Localization::GetInstance().Translate("ingame_replay_title"));
-  title->SetPosition(14.0f - title->GetTextWidthPercent() * 0.5f, 2.0f);
+      new Gui2Caption(windowManager, "caption_replay_title", 2, 2, 32, 3, titleText);
+  title->SetPosition(18.0f - title->GetTextWidthPercent() * 0.5f, 2.0f);
   header->AddView(title);
   title->Show();
 
   Gui2Frame* footer = new Gui2Frame(windowManager, "frame_replay_footer", 15, 89, 70, 9, true);
   this->AddView(footer);
   footer->Show();
+  const std::string helpText = soccerverseDemo
+                                   ? "PoC: eventi Soccerverse reali, geometria 3D ricostruita. Passaggio corto = camera; passaggio alto = riavvia."
+                                   : Localization::GetInstance().Translate("ingame_replay_help");
   Gui2Caption* help =
-      new Gui2Caption(windowManager, "caption_replay_help", 2, 1.2f, 66, 2.5f,
-                      Localization::GetInstance().Translate("ingame_replay_help"));
+      new Gui2Caption(windowManager, "caption_replay_help", 2, 1.2f, 66, 2.5f, helpText);
   help->SetPosition(35.0f - help->GetTextWidthPercent() * 0.5f, 1.2f);
   footer->AddView(help);
   help->Show();
@@ -56,29 +69,96 @@ ReplayPage::ReplayPage(Gui2WindowManager* windowManager, const Gui2PageData& pag
   timeLabel = new Gui2Caption(windowManager, "caption_replay_time", 2, 4.5f, 66, 3, "");
   footer->AddView(timeLabel);
   timeLabel->Show();
-  UpdateTimeLabel();
 
   sig_OnClose.connect([this](...) { OnClose(); });
 
-  match->SetAutoUpdateIngameCamera(false);
+  if (soccerverseDemo) {
+    // Keep the normal match paused, but render a dedicated reconstruction directly with the
+    // existing League-Soccer 3D scene, player models and camera system.
+    match->SetAutoUpdateIngameCamera(false);
 
-  match->replayState.Lock();
-  match->replayState->viewTime_ms = actualTime_ms;  // minTime_ms;
-  match->replayState->cam = cam;
-  match->replayState->modifierValue = 0.0f;
-  match->replayState->dirty = true;
-  match->replayState.Unlock();
+    match->GetActiveTeamPlayers(0, soccerverseAllPlayers);
+    match->GetActiveTeamPlayers(1, soccerverseAllPlayers);
+    for (Player* player : soccerverseAllPlayers) {
+      soccerverseOriginalPositions.push_back(player->GetHumanoidNode()->GetPosition());
+    }
+
+    std::vector<Player*> attackingPlayers;
+    match->GetActiveTeamPlayers(0, attackingPlayers);
+    for (Player* player : attackingPlayers) {
+      bool goalkeeper = false;
+      const std::vector<e_PlayerRole>& roles = player->GetPlayerData()->GetRoles();
+      for (e_PlayerRole role : roles) {
+        if (role == e_PlayerRole_GK) {
+          goalkeeper = true;
+          break;
+        }
+      }
+      if (!goalkeeper && soccerverseActors.size() < 7)
+        soccerverseActors.push_back(player);
+    }
+
+    std::vector<Player*> defendingPlayers;
+    match->GetActiveTeamPlayers(1, defendingPlayers);
+    for (Player* player : defendingPlayers) {
+      const std::vector<e_PlayerRole>& roles = player->GetPlayerData()->GetRoles();
+      for (e_PlayerRole role : roles) {
+        if (role == e_PlayerRole_GK) {
+          soccerverseGoalkeeper = player;
+          break;
+        }
+      }
+      if (soccerverseGoalkeeper)
+        break;
+    }
+
+    soccerverseOriginalBallPosition = match->GetBall()->GetBallGeom()->GetPosition();
+    soccerverseOriginalBallMomentum = match->GetBall()->GetMovement();
+    soccerverseDemoStart_ms = EnvironmentManager::GetInstance().GetTime_ms();
+
+    if (soccerverseActors.size() < 7 || !soccerverseGoalkeeper) {
+      soccerverseDemoFinished = true;
+      match->SpamMessage("Soccerverse PoC: impossibile mappare 7 giocatori + portiere.", 5000);
+    } else {
+      ProcessSoccerverseDemo();
+    }
+  } else {
+    match->SetAutoUpdateIngameCamera(false);
+
+    match->replayState.Lock();
+    match->replayState->viewTime_ms = actualTime_ms;  // minTime_ms;
+    match->replayState->cam = cam;
+    match->replayState->modifierValue = 0.0f;
+    match->replayState->dirty = true;
+    match->replayState.Unlock();
+  }
+
+  UpdateTimeLabel();
 }
 
 ReplayPage::~ReplayPage() {}
 
 void ReplayPage::OnClose() {
-  match->replayState.Lock();
-  match->replayState->viewTime_ms = maxTime_ms;
-  match->replayState->cam = cam;
-  match->replayState->modifierValue = 0.0f;
-  match->replayState->dirty = true;
-  match->replayState.Unlock();
+  if (soccerverseDemo) {
+    // Restore the live match visuals exactly where they were before entering the PoC.
+    unsigned int restoreCount =
+        std::min(soccerverseAllPlayers.size(), soccerverseOriginalPositions.size());
+    for (unsigned int i = 0; i < restoreCount; ++i) {
+      Player* player = soccerverseAllPlayers[i];
+      player->GetHumanoidNode()->SetPosition(soccerverseOriginalPositions[i], false);
+      player->GetHumanoidNode()->RecursiveUpdateSpatialData(e_SpatialDataType_Both);
+      player->UpdateFullbodyNodes();
+    }
+    match->GetBall()->GetBallGeom()->SetPosition(soccerverseOriginalBallPosition, false);
+    match->GetDynamicNode()->RecursiveUpdateSpatialData(e_SpatialDataType_Both);
+  } else {
+    match->replayState.Lock();
+    match->replayState->viewTime_ms = maxTime_ms;
+    match->replayState->cam = cam;
+    match->replayState->modifierValue = 0.0f;
+    match->replayState->dirty = true;
+    match->replayState.Unlock();
+  }
 
   GetScheduler()->ResetTaskSequenceTime("game");
   match->SetAutoUpdateIngameCamera(true);
@@ -98,7 +178,148 @@ void ReplayPage::Autorun(int replayHistoryOffset_ms, bool stayInReplay) {
   this->stayInReplay = stayInReplay;
 }
 
+Vector3 ReplayPage::GetSoccerverseActorPosition(int actorIndex, unsigned long elapsed_ms) const {
+  const Vector3 balogun(-30.0f, -8.0f, 0.0f);
+  const Vector3 jensen(-21.0f, -16.0f, 0.0f);
+  const Vector3 nygren(-11.0f, -9.0f, 0.0f);
+  const Vector3 ambros(-1.0f, -4.0f, 0.0f);
+  const Vector3 ramirezFirst(10.0f, 8.0f, 0.0f);
+  const Vector3 turay(21.0f, 14.0f, 0.0f);
+  const Vector3 garcia(31.0f, 6.0f, 0.0f);
+  const Vector3 ramirezShot(40.0f, 2.0f, 0.0f);
+  const Vector3 krahlStart(53.0f, 0.0f, 0.0f);
+  const Vector3 krahlSave(52.2f, 0.4f, 0.0f);
+
+  auto smooth01 = [](float value) {
+    value = clamp(value, 0.0f, 1.0f);
+    return value * value * (3.0f - 2.0f * value);
+  };
+
+  switch (actorIndex) {
+    case 0:
+      return balogun;
+    case 1:
+      return jensen;
+    case 2:
+      return nygren;
+    case 3:
+      return ambros;
+    case 4: {
+      if (elapsed_ms <= 3600)
+        return ramirezFirst;
+      if (elapsed_ms >= 6300)
+        return ramirezShot;
+      float bias = smooth01(static_cast<float>(elapsed_ms - 3600) / 2700.0f);
+      return ramirezFirst * (1.0f - bias) + ramirezShot * bias;
+    }
+    case 5:
+      return turay;
+    case 6:
+      return garcia;
+    case 7: {
+      if (elapsed_ms <= 7200)
+        return krahlStart;
+      if (elapsed_ms >= 8000)
+        return krahlSave;
+      float bias = smooth01(static_cast<float>(elapsed_ms - 7200) / 800.0f);
+      return krahlStart * (1.0f - bias) + krahlSave * bias;
+    }
+    default:
+      return Vector3(0);
+  }
+}
+
+Vector3 ReplayPage::GetSoccerverseBallPosition(unsigned long elapsed_ms) const {
+  struct BallKey {
+    unsigned long time_ms;
+    Vector3 position;
+  };
+
+  const BallKey keys[] = {
+      {0, GetSoccerverseActorPosition(0, elapsed_ms) + Vector3(0, 0, 0.11f)},
+      {900, GetSoccerverseActorPosition(1, elapsed_ms) + Vector3(0, 0, 0.11f)},
+      {1800, GetSoccerverseActorPosition(2, elapsed_ms) + Vector3(0, 0, 0.11f)},
+      {2700, GetSoccerverseActorPosition(3, elapsed_ms) + Vector3(0, 0, 0.11f)},
+      {3600, Vector3(10.0f, 8.0f, 0.11f)},
+      {4500, GetSoccerverseActorPosition(5, elapsed_ms) + Vector3(0, 0, 0.11f)},
+      {5400, GetSoccerverseActorPosition(6, elapsed_ms) + Vector3(0, 0, 0.11f)},
+      {6300, Vector3(40.0f, 2.0f, 0.11f)},
+      {7200, Vector3(40.4f, 2.0f, 0.11f)},
+      {8000, GetSoccerverseActorPosition(7, elapsed_ms) + Vector3(0, 0, 1.05f)},
+      {8500, GetSoccerverseActorPosition(7, elapsed_ms) + Vector3(-0.15f, 0, 0.95f)},
+  };
+  const unsigned int keyCount = sizeof(keys) / sizeof(keys[0]);
+
+  if (elapsed_ms <= keys[0].time_ms)
+    return keys[0].position;
+  if (elapsed_ms >= keys[keyCount - 1].time_ms)
+    return keys[keyCount - 1].position;
+
+  for (unsigned int i = 1; i < keyCount; ++i) {
+    if (elapsed_ms <= keys[i].time_ms) {
+      const BallKey& a = keys[i - 1];
+      const BallKey& b = keys[i];
+      float bias = static_cast<float>(elapsed_ms - a.time_ms) /
+                   static_cast<float>(b.time_ms - a.time_ms);
+      bias = clamp(bias, 0.0f, 1.0f);
+      bias = bias * bias * (3.0f - 2.0f * bias);
+      Vector3 result = a.position * (1.0f - bias) + b.position * bias;
+      if (a.time_ms == 7200 && b.time_ms == 8000)
+        result.coords[2] += sin(bias * pi) * 1.15f;
+      return result;
+    }
+  }
+
+  return keys[keyCount - 1].position;
+}
+
+void ReplayPage::ProcessSoccerverseDemo() {
+  if (soccerverseActors.size() < 7 || !soccerverseGoalkeeper)
+    return;
+
+  unsigned long now_ms = EnvironmentManager::GetInstance().GetTime_ms();
+  unsigned long elapsed_ms = now_ms - soccerverseDemoStart_ms;
+  if (elapsed_ms >= soccerverseDemoDuration_ms) {
+    elapsed_ms = soccerverseDemoDuration_ms;
+    soccerverseDemoFinished = true;
+  }
+  soccerverseDemoElapsed_ms = elapsed_ms;
+
+  for (unsigned int i = 0; i < soccerverseActors.size(); ++i) {
+    Vector3 target = GetSoccerverseActorPosition(static_cast<int>(i), elapsed_ms);
+    soccerverseActors[i]->GetHumanoidNode()->SetPosition(target, false);
+    soccerverseActors[i]->GetHumanoidNode()->RecursiveUpdateSpatialData(e_SpatialDataType_Both);
+    soccerverseActors[i]->UpdateFullbodyNodes();
+  }
+
+  Vector3 goalkeeperTarget = GetSoccerverseActorPosition(7, elapsed_ms);
+  soccerverseGoalkeeper->GetHumanoidNode()->SetPosition(goalkeeperTarget, false);
+  soccerverseGoalkeeper->GetHumanoidNode()->RecursiveUpdateSpatialData(e_SpatialDataType_Both);
+  soccerverseGoalkeeper->UpdateFullbodyNodes();
+
+  Vector3 ballPosition = GetSoccerverseBallPosition(elapsed_ms);
+  match->GetBall()->GetBallGeom()->SetPosition(ballPosition, false);
+
+  // Use League-Soccer's own replay camera implementation, only changing its target to the staged
+  // Soccerverse ball position. Camera type can still be cycled with the normal replay control.
+  match->SetReplayCamera(cam, ballPosition, modifierValue);
+  match->GetDynamicNode()->RecursiveUpdateSpatialData(e_SpatialDataType_Both);
+
+  UpdateTimeLabel();
+}
+
 void ReplayPage::UpdateTimeLabel() {
+  if (soccerverseDemo) {
+    std::string label = "Soccerverse #387016  |  81:34-82:21  |  " +
+                        int_to_str(soccerverseDemoElapsed_ms / 1000) + "s / " +
+                        int_to_str(soccerverseDemoDuration_ms / 1000) + "s";
+    if (soccerverseDemoFinished)
+      label += "  |  FINE CLIP";
+    timeLabel->SetCaption(label);
+    timeLabel->SetPosition(35.0f - timeLabel->GetTextWidthPercent() * 0.5f, 4.5f);
+    return;
+  }
+
   unsigned long replaySize_ms = maxTime_ms - minTime_ms;
   unsigned long elapsed_ms = actualTime_ms - minTime_ms;
   float positionPct = (replaySize_ms > 0) ? (elapsed_ms * 100.0f / replaySize_ms) : 0.0f;
@@ -112,6 +333,11 @@ void ReplayPage::UpdateTimeLabel() {
 }
 
 void ReplayPage::Process() {
+  if (soccerverseDemo) {
+    ProcessSoccerverseDemo();
+    return;
+  }
+
   if (autoRun) {
     Vector3 direction;
     direction.coords[0] = slowMotion ? 0.25f : 0.5f;
@@ -214,6 +440,22 @@ void ReplayPage::ProcessJoystickEvent(JoystickEvent* event) {
 
 void ReplayPage::ProcessInput(const Vector3& direction, bool button1, bool button2,
                               bool slowMoInput) {
+  if (soccerverseDemo) {
+    if (button1) {
+      cam++;
+      if (cam == replayCamCount)
+        cam = 0;
+    }
+    if (button2) {
+      soccerverseDemoStart_ms = EnvironmentManager::GetInstance().GetTime_ms();
+      soccerverseDemoElapsed_ms = 0;
+      soccerverseDemoFinished = false;
+    }
+    if (direction.coords[1] != 0.0f)
+      modifierValue = clamp(modifierValue + direction.coords[1] * 0.05f, -1.0f, 1.0f);
+    return;
+  }
+
   // slow-motion: held sprint button halves playback speed
   slowMotion = slowMoInput;
 

@@ -24,6 +24,7 @@ public:
   void GoVisualOptions();
   void GoSystemSettings();
   void GoReplay();
+  void GoSoccerverseReplay387016();
   void GoPreQuit();
   void GoSetPieceEditor();
 
