@@ -14,9 +14,9 @@ enum class SoccerverseGuideRole {
   RunnerShooter,
 };
 
-// A thin director layer over League-Soccer's native AI. The fallback controller keeps
-// running every tick. This controller only replaces selected movement/actions around a
-// Soccerverse factual anchor, so native locomotion, ball physics and football AI remain live.
+// Thin Soccerverse director layer. Stability rule for v2.0.1: only the factual
+// event actors remain externally guided. Shape-only players detach immediately
+// and continue under League-Soccer's untouched native AI.
 class SoccerverseGuidedController : public IController {
 public:
   SoccerverseGuidedController(Match* match, int formationSlot, bool attackingMentality,
@@ -32,8 +32,17 @@ public:
         lastVelocity(0.0f) {}
 
   void Process() override {
-    // External controllers replace the normal controller's Process() call in PlayerBase.
-    // Keep the native Eliza controller hot so its mental image / strategies remain valid.
+    // Do not replace the native controller for off-ball shape players. The first
+    // tick returns them to League-Soccer AI, reducing the external-controller
+    // surface from 22 players to the two source-event actors only.
+    if (guideRole == SoccerverseGuideRole::Shape) {
+      if (player)
+        player->SetExternalController(nullptr);
+      return;
+    }
+
+    // The two guided actors still need the native controller to update its
+    // mental image and strategies before we add Soccerverse anchor commands.
     if (fallbackController)
       fallbackController->Process();
   }
@@ -45,6 +54,11 @@ public:
     Player* guidedPlayer = static_cast<Player*>(player);
     if (fallbackController)
       fallbackController->RequestCommand(commandQueue);
+
+    // A shape controller should have detached in Process(). Keep this guard so
+    // an unusual call order still behaves as a pure native-AI passthrough.
+    if (guideRole == SoccerverseGuideRole::Shape)
+      return;
 
     const unsigned long now_ms = EnvironmentManager::GetInstance().GetTime_ms();
     const unsigned long elapsed_ms = now_ms >= directorStart_ms ? now_ms - directorStart_ms : 0;
@@ -58,8 +72,9 @@ public:
       return;
     }
 
-    // Source anchor: Vlahovic chases it through and scores. Before receiving, drive a
-    // football-shaped run through the channel; once the ball arrives, request a native shot.
+    // Source anchor: Vlahovic chases it through and scores. Before receiving,
+    // drive one native run through the channel; once the ball arrives, request
+    // a native shot. Everybody else is entirely controlled by League-Soccer.
     if (guideRole == SoccerverseGuideRole::RunnerShooter) {
       const float side = static_cast<float>(guidedPlayer->GetTeam()->GetSide());
       const Vector3 runTarget(-side * 39.0f, 5.5f, 0.0f);
@@ -73,19 +88,6 @@ public:
       if (elapsed_ms >= 900 && elapsed_ms <= 6500) {
         OverrideMovement(commandQueue, guidedPlayer, runTarget, sprintVelocity);
         return;
-      }
-    }
-
-    // All 22 players keep the native AI, but when an off-ball player drifts too far from
-    // the reconstructed 4-4-2 block we replace only the movement command. Near the ball,
-    // League-Soccer is free to press, tackle, support and react normally.
-    if (!guidedPlayer->HasPossession() &&
-        ballPosition.GetDistance(guidedPlayer->GetPosition().Get2D()) > 3.5f) {
-      const Vector3 shapeTarget = GetDynamic442Target(guidedPlayer, ballPosition);
-      const float shapeDistance = shapeTarget.GetDistance(guidedPlayer->GetPosition().Get2D());
-      if (shapeDistance > 5.0f) {
-        const float desiredVelocity = shapeDistance > 12.0f ? sprintVelocity : walkVelocity;
-        OverrideMovement(commandQueue, guidedPlayer, shapeTarget, desiredVelocity);
       }
     }
   }
@@ -108,62 +110,6 @@ public:
   }
 
 private:
-  Vector3 GetBase442Target(Player* guidedPlayer) const {
-    const float side = static_cast<float>(guidedPlayer->GetTeam()->GetSide());
-
-    // Formation #12 in the fixture capture is mapped to a 4-4-2 for this vertical slice.
-    // The mapping is reconstructed from the historical XI/role slots; these are formation
-    // geometry anchors, not claimed historical XY tracking coordinates.
-    switch (formationSlot) {
-      case 0:
-        return Vector3(side * 51.0f, 0.0f, 0.0f);       // GK
-      case 1:
-        return Vector3(side * 35.0f, -24.0f, 0.0f);     // RB
-      case 2:
-        return Vector3(side * 38.0f, -8.0f, 0.0f);      // RCB
-      case 3:
-        return Vector3(side * 38.0f, 8.0f, 0.0f);       // LCB
-      case 4:
-        return Vector3(side * 35.0f, 24.0f, 0.0f);      // LB
-      case 5:
-        return Vector3(side * 9.0f, -25.0f, 0.0f);      // RM
-      case 6:
-        return Vector3(side * 10.0f, -8.0f, 0.0f);      // RCM
-      case 7:
-        return Vector3(side * 10.0f, 8.0f, 0.0f);       // LCM
-      case 8:
-        return Vector3(side * 9.0f, 25.0f, 0.0f);       // LM
-      case 9:
-        return Vector3(side * -20.0f, -8.0f, 0.0f);     // RF
-      case 10:
-        return Vector3(side * -20.0f, 8.0f, 0.0f);      // LF
-      default:
-        return guidedPlayer->GetPosition().Get2D();
-    }
-  }
-
-  Vector3 GetDynamic442Target(Player* guidedPlayer, const Vector3& ballPosition) const {
-    Vector3 target = GetBase442Target(guidedPlayer);
-    if (formationSlot == 0) {
-      target.coords[1] = clamp(ballPosition.coords[1] * 0.10f, -3.0f, 3.0f);
-      return target;
-    }
-
-    // Whole-block translation toward the ball while keeping the line geometry recognizable.
-    target.coords[0] += ballPosition.coords[0] * 0.18f;
-    target.coords[1] += ballPosition.coords[1] * 0.22f;
-
-    if (attackingMentality) {
-      const float side = static_cast<float>(guidedPlayer->GetTeam()->GetSide());
-      const float mentalityPush = formationSlot >= 9 ? 5.0f : (formationSlot >= 5 ? 3.0f : 1.5f);
-      target.coords[0] += -side * mentalityPush;
-    }
-
-    target.coords[0] = clamp(target.coords[0], -50.0f, 50.0f);
-    target.coords[1] = clamp(target.coords[1], -32.0f, 32.0f);
-    return target;
-  }
-
   void OverrideMovement(PlayerCommandQueue& commandQueue, Player* guidedPlayer,
                         const Vector3& target, float desiredVelocity) {
     PlayerCommand movement;
@@ -206,8 +152,6 @@ private:
                pass.touchInfo.autoDirectionBias, pass.touchInfo.autoPowerBias,
                pass.touchInfo.desiredDirection, pass.touchInfo.desiredPower,
                pass.touchInfo.targetPlayer, pass.touchInfo.forcedTargetPlayer);
-
-    // Native Eliza queues actions before its final movement command. Preserve that ordering.
     commandQueue.insert(commandQueue.begin(), pass);
   }
 
