@@ -51,6 +51,7 @@ protected:
   std::vector<Vector3> soccerverseOriginalPositions;
   Player* soccerverseGoalkeeper;
   Vector3 soccerverseOriginalBallPosition;
+  Vector3 soccerverseOriginalBallMomentum;
 
   Gui2Caption* timeLabel;
 };
