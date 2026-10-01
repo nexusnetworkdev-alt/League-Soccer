@@ -57,6 +57,7 @@ protected:
   unsigned long soccerverseDemoDuration_ms;
   int soccerverseStartAwayScore;
   std::vector<Player*> soccerverseAllPlayers;
+  std::vector<IController*> soccerversePreviousExternalControllers;
   std::vector<IController*> soccerverseGuideControllers;
   Player* soccerversePasser;
   Player* soccerverseRunner;
